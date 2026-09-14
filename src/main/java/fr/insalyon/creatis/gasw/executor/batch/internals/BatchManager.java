@@ -116,7 +116,7 @@ public class BatchManager {
             runner = new BatchRunner();
             runner.start();
         }
-        synchronized (BatchManager.this){
+        synchronized (this){
             jobs.add(new BatchJob(jobData));
         }
     }
@@ -167,7 +167,7 @@ public class BatchManager {
                 sleep();
             }
             while ( ! stop) {
-                synchronized (BatchManager.this) {
+                synchronized (this) {
                     for (final BatchJob job : getUnfinishedJobs()) {
                         if (job.getStatus() == GaswStatus.NOT_SUBMITTED) {
                             try {
