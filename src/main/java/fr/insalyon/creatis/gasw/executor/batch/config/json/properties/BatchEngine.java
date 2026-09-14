@@ -31,30 +31,34 @@ public enum BatchEngine {
         this.metrics = metricsCommand;
     }
 
-    private RemoteCommand buidler(Class<? extends RemoteCommand> toBuild, final String data) {
-        try {
-            return toBuild.getConstructor(String.class).newInstance(data);
-        } catch (InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException
-                | NoSuchMethodException e) {
-            log.error("Failed to build the command (using batch engines)", e);
+    private RemoteCommand builder(Class<? extends RemoteCommand> toBuild, final String data) {
+            if (toBuild == null) {
+                log.warn("No command class specified for this engine operation (data: {})", data);
+                return null;
+            }
+            try {
+                return toBuild.getConstructor(String.class).newInstance(data);
+            } catch (InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException
+                    | NoSuchMethodException e) {
+                log.error("Failed to build the command", e);
+            }
+            return null;
         }
-        return null;
-    }
 
     public RemoteCommand getSubmitCommand(final String data) {
-        return buidler(submit, data);
+        return builder(submit, data);
     }
 
     public RemoteCommand getStatusCommand(final String data) {
-        return buidler(status, data);
+        return builder(status, data);
     }
 
     public RemoteCommand getDeleteCommand(final String data) {
-        return buidler(delete, data);
+        return builder(delete, data);
     }
 
     public RemoteCommand getMetricsCommand(final String data) {
-    return buidler(metrics, data);
+    return builder(metrics, data);
     
     }
 }

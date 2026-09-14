@@ -1,5 +1,12 @@
 package fr.insalyon.creatis.gasw.executor.batch.internals;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+
+
 import fr.insalyon.creatis.gasw.GaswException;
 import fr.insalyon.creatis.gasw.execution.GaswStatus;
 import fr.insalyon.creatis.gasw.executor.batch.config.json.properties.BatchEngine;
@@ -12,6 +19,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 
+
 @Slf4j
 @RequiredArgsConstructor
 @Setter
@@ -19,14 +27,17 @@ public class BatchJob {
 
     @Getter
     final private BatchJobData data;
-    
-    @Getter
-    @Setter
-    private String executionTimeSlurm;
-
+ 
+   
+    // @Getter
+    // @Setter
+    // private String executionTimeSlurm;
     @Getter
     private boolean     terminated = false;
     private GaswStatus  status = GaswStatus.NOT_SUBMITTED;
+
+    @Getter
+    private Map<String, String> metrics = new HashMap<>();
 
     /**
      * Upload all the data to the job directory.
@@ -168,45 +179,60 @@ public class BatchJob {
         log.warn("Max status retry reached for {}, the job status will defined as STALLED!", getData().getJobID());
         return GaswStatus.STALLED;
     }
-    public void generateRemoteSlurmMetrics() {
+
+public void generateRemoteMetrics() {
         String batchJobId = data.getBatchJobID();
-        String workingDir = data.getWorkingDir();
-        String remoteMetricsPath = workingDir + "out/" + data.getJobID() + ".slurm.metrics";
 
         if (batchJobId == null || batchJobId.isEmpty()) {
-            log.warn("Cannot retrieve Slurm metrics: batchJobID is null.");
+            log.warn("Cannot retrieve metrics on server {}: batchJobID is null");
             return;
         }
 
         try {
             String raw = fetchSacctResultWithRetry(batchJobId);
-            String metricsContent;
 
             if (raw != null) {
-                metricsContent = buildMetricsFromSacct(raw, batchJobId);
-            } else {
-                log.warn("No sacct data for job {} after retries, falling back to scontrol.", batchJobId);
-                metricsContent = buildMetricsFromScontrolFallback(batchJobId);
+                this.metrics = buildMetricsFromSacct(raw, batchJobId);
+            } else if (data.getEngine() == BatchEngine.SLURM) {
+                log.warn("No sacct data for job {} after retries on server {}, falling back to scontrol.");
+                this.metrics = buildMetricsFromScontrolFallback(batchJobId);
             }
 
-            if (metricsContent == null || metricsContent.isBlank()) {
-                log.warn("Unable to build Slurm metrics for job {} (sacct and scontrol both failed).", batchJobId);
+            if (this.metrics == null || this.metrics.isEmpty()) {
+                log.warn("Unable to build metrics for job {}", batchJobId);
                 return;
             }
 
-            writeMetricsFile(remoteMetricsPath, metricsContent);
+            log.info("Batch metrics stored for job {} ");
+            writeLocalMetricsFile(formatMetricsForFile(this.metrics));
 
         } catch (GaswException e) {
-            log.error("Failed to generate Slurm metrics for job " + batchJobId, e);
+            log.error("Failed to generate metrics for job {}", batchJobId, e);
+        }
+    }
+
+    private void writeLocalMetricsFile(String content) {
+        File file = new File(data.getJobID() + ".metrics");
+        try (FileWriter writer = new FileWriter(file)) {
+            writer.write(content);
+            log.info("Metrics written to {} ", file.getAbsolutePath());
+        } catch (IOException e) {
+            log.error("Failed to write metrics file ", e);
         }
     }
     private String fetchSacctResultWithRetry(String batchJobId) throws GaswException {
         final BatchEngine engine = data.getEngine();
+        final RemoteCommand command = engine.getMetricsCommand(batchJobId);
+
+        if (command == null) {
+            log.warn("No metrics command available for batch engine {}", engine);
+            return null;
+        }
+
         final int maxRetry = 3;
         final long waitMs = 3000;
 
         for (int i = 0; i < maxRetry; i++) {
-            final RemoteCommand command = engine.getMetricsCommand(batchJobId);
             command.execute(data.getConfig());
             String raw = command.result();
 
@@ -214,8 +240,7 @@ public class BatchJob {
                 return raw;
             }
 
-            log.warn("sacct returned no usable data for job {} (attempt {}/{}), retrying in {} ms",
-                batchJobId, i + 1, maxRetry, waitMs);
+            log.warn("Metrics command returned no usable data for job {} (attempt {}/{}), retrying in {} ms",batchJobId, i + 1, maxRetry, waitMs);
 
             if (i < maxRetry - 1) {
                 try {
@@ -229,38 +254,36 @@ public class BatchJob {
         return null;
     }
 
-    private String buildMetricsFromSacct(String raw, String batchJobId) {
+    private Map<String, String> buildMetricsFromSacct(String raw, String batchJobId) {
         String[] fields = raw.split("\\|");
         if (fields.length < 9) {
             log.warn("Unexpected sacct output format for job {}: {}", batchJobId, raw);
             return null;
         }
 
-        String jobid = fields[0];
-        String state = fields[1];
-        String exitcode = fields[2];
-        String cpuUtil = fields[3];
-        String memUsed = fields[4];
-        String memAlloc = fields[5];
-        String start = fields[6].replace("T", " ");
-        String end = fields[7].replace("T", " ");
-        String elapsed = normalizeElapsed(fields[8]);
-        String memPct = computeMemPct(memUsed, memAlloc);
+        Map<String, String> map = new HashMap<>();
+        map.put("jobId", fields[0]);
+        map.put("state", fields[1]);
+        map.put("exitCode", fields[2]);
+        map.put("cpuUsagePct", fields[3]);
+        map.put("maxMemoryUsed", fields[4]);
+        map.put("memoryAllocated", fields[5]);
+        map.put("memoryUsagePct", computeMemPct(fields[4], fields[5]));
+        map.put("startTime", fields[6].replace("T", " "));
+        map.put("endTime", fields[7].replace("T", " "));
+        map.put("elapsedTime", normalizeElapsed(fields[8]));
 
-        this.setExecutionTimeSlurm(elapsed);
-        log.info("Execution Time Slurm set directly to object for H2 persistence: {}", elapsed);
-
-        return buildMetricsContent(jobid, state, exitcode, cpuUtil, memAlloc, memUsed, memPct, start, end, elapsed);
+        return map;
     }
 
-    private String buildMetricsFromScontrolFallback(String batchJobId) {
+    private Map<String, String> buildMetricsFromScontrolFallback(String batchJobId) {
         try {
             RemoteCommand fullCmd = new RemoteCommand("scontrol show job " + batchJobId + " | xargs") {
-            @Override
-            public String result() {
-                return String.join(" ", getOutput().getStdout().getRow(0));
-            }
-                 };
+                @Override
+                public String result() {
+                    return String.join(" ", getOutput().getStdout().getRow(0));
+                }
+            };
             fullCmd.execute(data.getConfig());
 
             if (fullCmd.failed()) {
@@ -269,22 +292,46 @@ public class BatchJob {
             }
 
             String scontrolOut = fullCmd.result();
-
-            String state = extractField(scontrolOut, "JobState");
-            String exitcode = extractField(scontrolOut, "ExitCode");
             String start = extractField(scontrolOut, "StartTime").replace("T", " ");
             String end = extractField(scontrolOut, "EndTime").replace("T", " ");
-            String memAlloc = extractField(scontrolOut, "MinMemoryNode");
-            String elapsed = computeElapsedFromDates(start, end);
 
-            this.setExecutionTimeSlurm(elapsed);
+            Map<String, String> map = new HashMap<>();
+            map.put("jobId", batchJobId);
+            map.put("state", extractField(scontrolOut, "JobState"));
+            map.put("exitCode", extractField(scontrolOut, "ExitCode"));
+            map.put("cpuUsagePct", "N/A");
+            map.put("memoryAllocated", extractField(scontrolOut, "MinMemoryNode"));
+            map.put("maxMemoryUsed", "N/A");
+            map.put("memoryUsagePct", "N/A");
+            map.put("startTime", start);
+            map.put("endTime", end);
+            map.put("elapsedTime", computeElapsedFromDates(start, end));
 
-            return buildMetricsContent(batchJobId, state, exitcode, "N/A", memAlloc, "N/A", "N/A", start, end, elapsed);
+            return map;
 
         } catch (GaswException e) {
             log.error("scontrol fallback failed for job " + batchJobId, e);
             return null;
         }
+    }
+
+    private String formatMetricsForFile(Map<String, String> map) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("=======================================\n");
+        sb.append("         BATCH JOB MONITORING          \n");
+        sb.append("=======================================\n");
+        sb.append("Job ID             : ").append(map.getOrDefault("jobId", "N/A")).append("\n");
+        sb.append("Job State          : ").append(map.getOrDefault("state", "N/A")).append("\n");
+        sb.append("Exit Code          : ").append(map.getOrDefault("exitCode", "N/A")).append("\n");
+        sb.append("CPU Usage %        : ").append(map.getOrDefault("cpuUsagePct", "N/A")).append("\n");
+        sb.append("Allocated Memory   : ").append(map.getOrDefault("memoryAllocated", "N/A")).append("\n");
+        sb.append("Max RAM Used       : ").append(map.getOrDefault("maxMemoryUsed", "N/A")).append("\n");
+        sb.append("Memory Usage %     : ").append(map.getOrDefault("memoryUsagePct", "N/A")).append("\n");
+        sb.append("Launch Time        : ").append(map.getOrDefault("startTime", "N/A")).append("\n");
+        sb.append("End Time           : ").append(map.getOrDefault("endTime", "N/A")).append("\n");
+        sb.append("Execution Time     : ").append(map.getOrDefault("elapsedTime", "N/A")).append("\n");
+        sb.append("======================================\n");
+        return sb.toString();
     }
 
     private String extractField(String raw, String key) {
@@ -302,28 +349,6 @@ public class BatchJob {
         } catch (Exception e) {
             return "N/A";
         }
-    }
-
-    private String buildMetricsContent(String jobid, String state, String exitcode, String cpuUtil,
-            String memAlloc, String memUsed, String memPct, String start, String end, String elapsed) {
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("=======================================\n");
-        sb.append("         SLURM JOB MONITORING           \n");
-        sb.append("=======================================\n");
-        sb.append("Job ID             : ").append(jobid).append("\n");
-        sb.append("Job State          : ").append(state).append("\n");
-        sb.append("Exit Code          : ").append(exitcode).append("\n");
-        sb.append("CPU Usage %        : ").append(cpuUtil).append("\n");
-        sb.append("Allocated Memory   : ").append(memAlloc).append("\n");
-        sb.append("Max RAM Used       : ").append(memUsed).append("\n");
-        sb.append("Memory Usage %     : ").append(memPct).append("\n");
-        sb.append("Launch Time        : ").append(start).append("\n");
-        sb.append("End Time           : ").append(end).append("\n");
-        sb.append("Execution Time     : ").append(elapsed).append("\n");
-        sb.append("======================================\n");
-
-        return sb.toString();
     }
 
     private String normalizeElapsed(String elapsed) {
@@ -356,23 +381,5 @@ public class BatchJob {
         }
         String digits = value.replaceAll("[^0-9]", "");
         return digits.isEmpty() ? 0 : Double.parseDouble(digits);
-    }
-
-    private void writeMetricsFile(String remoteMetricsPath, String content) throws GaswException {
-        String writeCommand = "mkdir -p " + remoteMetricsPath.substring(0, remoteMetricsPath.lastIndexOf('/'))
-            + " && cat << 'EOF' > " + remoteMetricsPath + "\n"
-            + content
-            + "EOF";
-
-        RemoteCommand writeCmd = new RemoteCommand(writeCommand) {
-            @Override public String result() { return ""; }
-        };
-        writeCmd.execute(data.getConfig());
-
-        if (writeCmd.failed()) {
-            log.error("Failed to write Slurm metrics file at {}", remoteMetricsPath);
-        } else {
-            log.info("Slurm metrics successfully generated at: {}", remoteMetricsPath);
-        }
     }
 }

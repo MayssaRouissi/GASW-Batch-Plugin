@@ -50,7 +50,7 @@ final public class BatchMonitor extends GaswMonitor {
                         if (status == GaswStatus.ERROR || status == GaswStatus.COMPLETED) {
                             daoJob.setExitCode(job.getExitCode());
                             daoJob.setStatus(job.getExitCode() == 0 ? GaswStatus.COMPLETED : GaswStatus.ERROR);
-                            job.generateRemoteSlurmMetrics(); 
+                            job.generateRemoteMetrics(); 
                         } else {
                             daoJob.setStatus(status);
                         }
@@ -71,8 +71,8 @@ final public class BatchMonitor extends GaswMonitor {
                             finish();
                             break;
                         }
-                    }
-                    }
+        }
+    }
 
     @Override
     public synchronized void add(
