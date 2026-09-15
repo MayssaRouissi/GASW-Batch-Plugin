@@ -1,7 +1,8 @@
 package fr.insalyon.creatis.gasw.executor.batch;
 
 import java.util.Date;
-
+import java.util.Map;
+import fr.insalyon.creatis.gasw.bean.JobMetric;
 import fr.insalyon.creatis.gasw.GaswConfiguration;
 import fr.insalyon.creatis.gasw.GaswException;
 import fr.insalyon.creatis.gasw.bean.Job;
@@ -50,7 +51,10 @@ final public class BatchMonitor extends GaswMonitor {
                         if (status == GaswStatus.ERROR || status == GaswStatus.COMPLETED) {
                             daoJob.setExitCode(job.getExitCode());
                             daoJob.setStatus(job.getExitCode() == 0 ? GaswStatus.COMPLETED : GaswStatus.ERROR);
-                            job.generateRemoteMetrics(); 
+                            Map<JobMetric, String> metrics = job.generateRemoteMetrics();
+                                if (metrics != null) {
+                                    daoJob.setMetrics(metrics);
+                                } 
                         } else {
                             daoJob.setStatus(status);
                         }

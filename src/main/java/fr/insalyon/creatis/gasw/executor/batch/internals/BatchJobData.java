@@ -85,7 +85,7 @@ public class BatchJobData {
     }
 
     public String getMetricsPath() {
-        return getWorkingDir() + "out/" + getJobID() + ".slurm.metrics";
+        return getWorkingDir() + "out/" + getJobID() + ".metrics";
     }
 
     public String getRemoteBatchFile() {
